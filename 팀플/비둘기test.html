@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+  <title>Pigeon AR Game</title>
+
+  <!-- p5.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+
+  <!-- ml5 -->
+  <script src="https://unpkg.com/ml5@latest/dist/ml5.min.js"></script>
+
+  <style>
+    body{
+      margin:0;
+      overflow:hidden;
+      background:#000;
+    }
+
+    canvas{
+      display:block;
+      margin:auto;
+    }
+  </style>
+</head>
+
+<body>
+
+<script>
+
+/*
+=========================================================
+🐦 PIGEON AR GAME
+=========================================================
+
+기능:
+- 웹캠 기반 AR 느낌 게임
+- MoveNet BodyPose
+- MediaPipe Hands
+- 손으로 둥지 만들기
+- 알 받기
+- 똥 피하기
+
+=========================================================
+*/
+
+
+//////////////////////////////////////////////////////////
+// 기본 변수
+//////////////////////////////////////////////////////////
+
+let video;
+
+let bodyPose;
+let poses = [];
+let skeleton;
+
+// Hands
+let handPose;
+let hands = [];
+
+// 게임
+let pigeons = [];
+let drops = [];
+
+let score = 0;
+let hp = 3;
+
+let gameStarted = false;
+let gameOver = false;
+
+let spawnTimer = 0;
+
+
+//////////////////////////////////////////////////////////
+// preload
+//////////////////////////////////////////////////////////
+
+function preload() {
+
+  // MoveNet
+  bodyPose = ml5.bodyPose("MoveNet");
+
+  // MediaPipe Hands
+  handPose = ml5.handPose();
+}
+
+
+//////////////////////////////////////////////////////////
+// setup
+//////////////////////////////////////////////////////////
+
+function setup() {
+
+  createCanvas(1280, 720);
+
+  video = createCapture(VIDEO);
+  video.size(width, height);
+  video.hide();
+
+  // body
+  bodyPose.detectStart(video, gotPoses);
+  skeleton = bodyPose.getSkeleton();
+
+  // hands
+  handPose.detectStart(video, gotHands);
+
+  // 비둘기 생성
+  for(let i=0;i<4;i++){
+    pigeons.push(
+      new Pigeon(
+        random(100,width-100),
+        random(80,220)
+      )
+    );
+  }
+
+  textFont('sans-serif');
+}
+
+
+//////////////////////////////////////////////////////////
+// draw
+//////////////////////////////////////////////////////////
+
+function draw() {
+
+  background(0);
+
+  //////////////////////////////////////////////////////
+  // 웹캠 (거울모드)
+  //////////////////////////////////////////////////////
+
+  push();
+
+  translate(width,0);
+  scale(-1,1);
+
+  image(video,0,0,width,height);
+
+  drawBody();
+  drawHands();
+
+  updateGame();
+
+  pop();
+
+  drawUI();
+}
+
+
+//////////////////////////////////////////////////////////
+// 게임
+//////////////////////////////////////////////////////////
+
+function updateGame(){
+
+  if(gameOver) return;
+
+  //////////////////////////////////////////////////////
+  // 둥지 상태
+  //////////////////////////////////////////////////////
+
+  let nest = getNestData();
+
+  if(nest.active){
+
+    fill(255,220,0,120);
+    noStroke();
+
+    ellipse(
+      nest.x,
+      nest.y,
+      nest.size,
+      nest.size * 0.6
+    );
+
+    textSize(40);
+    textAlign(CENTER);
+
+    text("🪺", nest.x, nest.y);
+  }
+
+  //////////////////////////////////////////////////////
+  // 비둘기
+  //////////////////////////////////////////////////////
+
+  for(let p of pigeons){
+    p.update();
+    p.display();
+  }
+
+  //////////////////////////////////////////////////////
+  // 낙하 생성
+  //////////////////////////////////////////////////////
+
+  spawnTimer++;
+
+  if(spawnTimer > 45){
+
+    spawnTimer = 0;
+
+    let p = random(pigeons);
+
+    let type;
+
+    // 70% 알
+    if(random() < 0.7){
+      type = "egg";
+    }else{
+      type = "poop";
+    }
+
+    drops.push(
+      new Drop(
+        p.x,
+        p.y + 40,
+        type
+      )
+    );
+  }
+
+  //////////////////////////////////////////////////////
+  // 낙하 업데이트
+  //////////////////////////////////////////////////////
+
+  for(let i=drops.length-1; i>=0; i--){
+
+    let d = drops[i];
+
+    d.update();
+    d.display();
+
+    ////////////////////////////////////////////////
+    // 둥지 충돌
+    ////////////////////////////////////////////////
+
+    if(nest.active){
+
+      let hit =
+        dist(d.x,d.y,nest.x,nest.y)
+        < nest.size * 0.4;
+
+      if(hit){
+
+        // 알 받기 성공
+        if(d.type === "egg"){
+
+          score += 10;
+
+          createParticles(
+            d.x,
+            d.y,
+            color(255,255,0)
+          );
+        }
+
+        // 똥 맞음
+        else{
+
+          hp--;
+
+          createParticles(
+            d.x,
+            d.y,
+            color(100,255,100)
+          );
+
+          if(hp <= 0){
+            gameOver = true;
+          }
+        }
+
+        drops.splice(i,1);
+      }
+    }
+
+    ////////////////////////////////////////////////
+    // 바닥 제거
+    ////////////////////////////////////////////////
+
+    if(d.y > height + 100){
+      drops.splice(i,1);
+    }
+  }
+
+  updateParticles();
+}
+
+
+//////////////////////////////////////////////////////////
+// BODY
+//////////////////////////////////////////////////////////
+
+function drawBody(){
+
+  for(let pose of poses){
+
+    ////////////////////////////////////////////////
+    // 스켈레톤
+    ////////////////////////////////////////////////
+
+    for(let s of skeleton){
+
+      let a = pose.keypoints[s[0]];
+      let b = pose.keypoints[s[1]];
+
+      if(
+        a.confidence > 0.1 &&
+        b.confidence > 0.1
+      ){
+
+        stroke(255,0,0);
+        strokeWeight(3);
+
+        line(a.x,a.y,b.x,b.y);
+      }
+    }
+
+    ////////////////////////////////////////////////
+    // 포인트
+    ////////////////////////////////////////////////
+
+    for(let k of pose.keypoints){
+
+      if(k.confidence > 0.1){
+
+        fill(0,255,0);
+        noStroke();
+
+        circle(k.x,k.y,12);
+      }
+    }
+  }
+}
+
+
+//////////////////////////////////////////////////////////
+// HANDS
+//////////////////////////////////////////////////////////
+
+function drawHands(){
+
+  for(let hand of hands){
+
+    for(let kp of hand.keypoints){
+
+      fill(0,150,255);
+      noStroke();
+
+      circle(kp.x,kp.y,10);
+    }
+
+    ////////////////////////////////////////////////
+    // 손 연결선
+    ////////////////////////////////////////////////
+
+    stroke(0,150,255);
+    strokeWeight(2);
+
+    for(let i=0;i<hand.keypoints.length-1;i++){
+
+      let a = hand.keypoints[i];
+      let b = hand.keypoints[i+1];
+
+      line(a.x,a.y,b.x,b.y);
+    }
+  }
+}
+
+
+//////////////////////////////////////////////////////////
+// 둥지 인식
+//////////////////////////////////////////////////////////
+
+function getNestData(){
+
+  if(hands.length < 2){
+
+    return {
+      active:false
+    };
+  }
+
+  let h1 = hands[0];
+  let h2 = hands[1];
+
+  //////////////////////////////////////////////////////
+  // 손바닥 중심
+  //////////////////////////////////////////////////////
+
+  let p1 = h1.keypoints[0];
+  let p2 = h2.keypoints[0];
+
+  let centerX = (p1.x + p2.x) / 2;
+  let centerY = (p1.y + p2.y) / 2;
+
+  //////////////////////////////////////////////////////
+  // 거리
+  //////////////////////////////////////////////////////
+
+  let d = dist(
+    p1.x,p1.y,
+    p2.x,p2.y
+  );
+
+  //////////////////////////////////////////////////////
+  // 둥지 조건
+  //////////////////////////////////////////////////////
+
+  let active = false;
+
+  if(
+    d > 80 &&
+    d < 220 &&
+    abs(p1.y - p2.y) < 80
+  ){
+    active = true;
+  }
+
+  return {
+    active:active,
+    x:centerX,
+    y:centerY,
+    size:d
+  };
+}
+
+
+//////////////////////////////////////////////////////////
+// 비둘기
+//////////////////////////////////////////////////////////
+
+class Pigeon{
+
+  constructor(x,y){
+
+    this.x = x;
+    this.y = y;
+
+    this.speed = random(2,4);
+
+    this.dir = random([1,-1]);
+  }
+
+  update(){
+
+    this.x += this.speed * this.dir;
+
+    if(
+      this.x < 80 ||
+      this.x > width-80
+    ){
+      this.dir *= -1;
+    }
+  }
+
+  display(){
+
+    textSize(60);
+    textAlign(CENTER,CENTER);
+
+    text("🕊️",this.x,this.y);
+  }
+}
+
+
+//////////////////////////////////////////////////////////
+// 낙하물
+//////////////////////////////////////////////////////////
+
+class Drop{
+
+  constructor(x,y,type){
+
+    this.x = x;
+    this.y = y;
+
+    this.type = type;
+
+    this.speed = random(5,9);
+  }
+
+  update(){
+
+    this.y += this.speed;
+  }
+
+  display(){
+
+    textSize(42);
+
+    if(this.type === "egg"){
+      text("🥚",this.x,this.y);
+    }else{
+      text("💩",this.x,this.y);
+    }
+  }
+}
+
+
+//////////////////////////////////////////////////////////
+// 파티클
+//////////////////////////////////////////////////////////
+
+let particles = [];
+
+function createParticles(x,y,c){
+
+  for(let i=0;i<15;i++){
+
+    particles.push({
+
+      x:x,
+      y:y,
+
+      vx:random(-3,3),
+      vy:random(-3,3),
+
+      life:255,
+
+      c:c
+    });
+  }
+}
+
+function updateParticles(){
+
+  for(let i=particles.length-1;i>=0;i--){
+
+    let p = particles[i];
+
+    p.x += p.vx;
+    p.y += p.vy;
+
+    p.life -= 6;
+
+    fill(
+      red(p.c),
+      green(p.c),
+      blue(p.c),
+      p.life
+    );
+
+    noStroke();
+
+    circle(p.x,p.y,8);
+
+    if(p.life <= 0){
+      particles.splice(i,1);
+    }
+  }
+}
+
+
+//////////////////////////////////////////////////////////
+// UI
+//////////////////////////////////////////////////////////
+
+function drawUI(){
+
+  fill(255);
+  stroke(0);
+  strokeWeight(5);
+
+  textSize(36);
+  textAlign(LEFT,TOP);
+
+  text("SCORE : " + score,20,20);
+  text("HP : " + hp,20,70);
+
+  //////////////////////////////////////////////////////
+  // 안내
+  //////////////////////////////////////////////////////
+
+  textSize(28);
+
+  text(
+    "양손으로 둥지 모양을 만들어 알을 받으세요!",
+    20,
+    130
+  );
+
+  //////////////////////////////////////////////////////
+  // 게임오버
+  //////////////////////////////////////////////////////
+
+  if(gameOver){
+
+    fill(255,0,0);
+
+    textAlign(CENTER,CENTER);
+
+    textSize(100);
+
+    text(
+      "GAME OVER",
+      width/2,
+      height/2
+    );
+
+    textSize(40);
+
+    text(
+      "Press R to Restart",
+      width/2,
+      height/2 + 100
+    );
+  }
+}
+
+
+//////////////////////////////////////////////////////////
+// 재시작
+//////////////////////////////////////////////////////////
+
+function keyPressed(){
+
+  if(key === 'r' || key === 'R'){
+
+    score = 0;
+    hp = 3;
+
+    drops = [];
+    particles = [];
+
+    gameOver = false;
+  }
+}
+
+
+//////////////////////////////////////////////////////////
+// 콜백
+//////////////////////////////////////////////////////////
+
+function gotPoses(results){
+
+  poses = results;
+}
+
+function gotHands(results){
+
+  hands = results;
+}
+
+</script>
+
+</body>
+</html>
